@@ -1,0 +1,16 @@
+server:
+  address: "localhost"
+  port: 3306
+
+database:
+  db_user: "root"
+  db_password: "asd"
+
+logger:
+  log_directory: "/mnt/d/databases/mysql/resources/mysql-restore-dump-with-prefix/test"
+  log_filename: "restore.log"
+
+software:
+  destination_prefix: "eff0887_"
+  restore_threads: 4
+  dump_file_directory: "/mnt/d/databases/mysql/resources/MySQL-Data-Migration-and-Renaming"

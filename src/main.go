@@ -1,33 +1,21 @@
 package main
 
 import (
-	_ "database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/exec"
 	_ "os/exec"
 	"path/filepath"
 	"strings"
-	_ "sync"
+	"sync"
 	"time"
-	"io"
+
+	"github.com/sahatsawats/concurrent-queue"
 	"github.com/sahatsawats/mysql-restore-dump-with-prefix/src/models"
 	"gopkg.in/yaml.v2"
-	"github.com/sahatsawats/concurrent-queue"
 )
-
-// TODO: Make the directory if not exists
-func makeDirectory(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		err = os.Mkdir(path, 0755)
-
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
 
 // TODO: Reading configuration file from ./conf/config.yaml based on executable path
 func readingConfigurationFile() *models.Configurations {
@@ -60,6 +48,46 @@ func commaSplit(str string) []string {
 	return strings.Split(str, ",")
 }
 
+func restoreDumpFile(wg *sync.WaitGroup, databaseCredentails *models.DatabaseCrednetials, jobQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], repairQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], prefix string) {
+	var nok int
+	defer wg.Done()
+	for {
+		// Define break condition, if queue is empty -> exit
+		if jobQueue.IsEmpty() {
+			break
+		}
+
+		// Dequeue dump name from concurrent queue
+		dumpInfo := jobQueue.Dequeue()
+
+		// Normally, the dump dir came with "<database-name>-staging"
+		// Therefore, remove the extension for retrieved actual database name
+		rawSchemaName := strings.ReplaceAll(dumpInfo.DirName, "-staging", "")
+		// Add the prefix infront of database name
+		prefixSchemaName := fmt.Sprintf("%s%s", prefix, rawSchemaName)
+
+		// Bash execution:
+		// mysqlsh -h <host> -P <port> -u <user> -p<password> --js -e "util.loadDump('path-to-dir', {schema: 'database_name', threads: 4})"
+		cmd := exec.Command(
+			"mysqlsh", "-h", databaseCredentails.DBAddress, "-P", databaseCredentails.DBPort, "-u", databaseCredentails.User,
+			fmt.Sprintf("-p%s", databaseCredentails.Password),
+			"--js",
+			"-e", fmt.Sprintf("util.loadDump('%s', {schema: '%s',threads: 4})",dumpInfo.FullPath, prefixSchemaName),
+		)
+
+		// execute the cmd
+		err := cmd.Run()
+		if err != nil {
+			log.Printf("error from restore database name %s from path %s: %v \n", prefixSchemaName, dumpInfo.FullPath, err)
+			log.Printf("Enqueue %s to repair queue. \n", prefixSchemaName)
+			nok += 1
+			// Enqueue database to reqair queue
+			repairQueue.Enqueue(dumpInfo)
+		} 
+	}
+	log.Printf("Complete restore database to MySQL with error report: %d", nok)
+}
+
 func main() {
 	programStartTime := time.Now()
 	fmt.Println("Start reading configuration file...")
@@ -84,8 +112,17 @@ func main() {
 	jobQueue := concurrentqueue.New[models.JobQueue]()
 	retryQueue := concurrentqueue.New[models.JobQueue]()
 
+	// Define database credentials
+	databaseCredentails := &models.DatabaseCrednetials{
+		DBAddress: config.Server.ADDRESS,
+		DBPort: fmt.Sprintf("%d",config.Server.PORT),
+		User: config.Database.DB_USER,
+		Password: config.Database.DB_PASSWORD,
+	}
+
+	// Split the directory from configuration
 	listOfDumpDirectory := commaSplit(config.Software.DUMP_FILE_DIRECTORYS)
-	log.Println("Complete reading the dump directory. Total directory: %n", len(listOfDumpDirectory))
+	log.Println("Complete reading the dump directory. Total directory:", len(listOfDumpDirectory))
 	log.Println("Start enqueue file in directory...")
 	// Loop through provided directory which each directory hold dump directorys
 	for _, rootDir := range listOfDumpDirectory{
@@ -107,11 +144,20 @@ func main() {
 			}
 			// If not directory, skip.
 		}
-
-
-
+		log.Println("Complete enqueue all directory in", rootDir)
 	}
 
+	// Define wait group for each concurrent
+	var wg sync.WaitGroup
+	// for loop add concurrent goroutine to wait group.
+	restoreThreads := config.Software.RESTORE_THREADS
+	for i := 1; i >=  restoreThreads; i++ {
+		wg.Add(1)
+		restoreDumpFile(&wg, databaseCredentails, jobQueue, retryQueue, config.Software.DESTINATION_PREFIX)
+	}
+
+	// Wait for concurrent threads to be complate
+	wg.Wait()
 	programUsageTime := time.Since(programStartTime)
 	log.Println(programUsageTime)
 }
