@@ -47,7 +47,7 @@ func commaSplit(str string) []string {
 	return strings.Split(str, ",")
 }
 
-func restoreDumpFile(wg *sync.WaitGroup, databaseCredentails *models.DatabaseCrednetials, jobQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], repairQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], prefix string) {
+func restoreDumpFile(wg *sync.WaitGroup, databaseCredentails *models.DatabaseCrednetials, jobQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], repairQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], prefix string, isRepair bool) {
 	var nok int
 	defer wg.Done()
 	for {
@@ -77,28 +77,30 @@ func restoreDumpFile(wg *sync.WaitGroup, databaseCredentails *models.DatabaseCre
 		// execute the cmd
 		err := cmd.Run()
 		if err != nil {
-			log.Printf("error from restore database name %s from path %s: %v \n", prefixSchemaName, dumpInfo.FullPath, err)
-			log.Printf("Enqueue %s to repair queue. \n", prefixSchemaName)
+			log.Printf("[WARNING] Error from restore database name %s from path %s: %v \n", prefixSchemaName, dumpInfo.FullPath, err)
 			nok += 1
-			// Enqueue database to reqair queue
-			repairQueue.Enqueue(dumpInfo)
+			// Enqueue database to reqair queue if is not in repair process.
+			if !isRepair {
+				log.Printf("[INFO] Enqueue %s to repair queue. \n", prefixSchemaName)
+				repairQueue.Enqueue(dumpInfo)
+			}
 		} 
 	}
-	log.Printf("Complete restore database to MySQL with error report: %d", nok)
+	log.Printf("[INFO] Complete restore database to MySQL with error report: %d", nok)
 }
 
 func main() {
 	programStartTime := time.Now()
-	fmt.Println("Start reading configuration file...")
+	fmt.Println("[INFO] Start reading configuration file...")
 	config := readingConfigurationFile()
-	fmt.Println("Complete reading configuration file.")
+	fmt.Println("[INFO] Complete reading configuration file.")
 
 	// Join logging path
 	logFilePath := filepath.Join(config.Logger.LOG_DIRECTORY, config.Logger.LOG_FILENAME)
 	// Open log path
 	Logfile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Fatalf("error opening file: %v", err)
+		log.Fatalf("[ERROR] Error opening file: %v", err)
 	}
 	defer Logfile.Close()
 	// Setup the logger to show on stdout as well as appending to log file
@@ -121,14 +123,14 @@ func main() {
 
 	// Split the directory from configuration
 	listOfDumpDirectory := commaSplit(config.Software.DUMP_FILE_DIRECTORYS)
-	log.Println("Complete reading the dump directory. Total directory:", len(listOfDumpDirectory))
-	log.Println("Start enqueue file in directory...")
+	log.Println("[INFO] Complete reading the dump directory. Total directory:", len(listOfDumpDirectory))
+	log.Println("[INFO] Start enqueue file in directory...")
 	// Loop through provided directory which each directory hold dump directorys
 	for _, rootDir := range listOfDumpDirectory{
 		// Reading all directory in rootDir, if error -> exit with status 1
 		listOfDirInfo, err := os.ReadDir(rootDir)
 		if err != nil {
-			log.Fatalf("Failed to reading directory %s with error: %v", rootDir, err)
+			log.Fatalf("[ERROR] Failed to reading directory %s with error: %v", rootDir, err)
 		}
 		// Loop through each directory in rootDir, filter out other file format.
 		for _, dirInfo := range listOfDirInfo {
@@ -143,20 +145,36 @@ func main() {
 			}
 			// If not directory, skip.
 		}
-		log.Println("Complete enqueue all directory in", rootDir)
+		log.Println("[INFO] Complete enqueue all directory in", rootDir)
 	}
 
 	// Define wait group for each concurrent
 	var wg sync.WaitGroup
 	// for loop add concurrent goroutine to wait group.
 	restoreThreads := config.Software.RESTORE_THREADS
-	for i := 1; i >=  restoreThreads; i++ {
+	for i := 1; i >= restoreThreads; i++ {
 		wg.Add(1)
-		restoreDumpFile(&wg, databaseCredentails, jobQueue, retryQueue, config.Software.DESTINATION_PREFIX)
+		restoreDumpFile(&wg, databaseCredentails, jobQueue, retryQueue, config.Software.DESTINATION_PREFIX, false)
+	}
+
+	// Waiting for goroutine process to be complete
+	wg.Wait()
+
+	// Check condition that retry queue is empty or not. If not -> repair
+	if !(retryQueue.IsEmpty()) {
+		log.Println("[INFO] Repair Service: Initiated. Number of repair requests found. Starting the repair process.")
+		// Reference same amount of threads
+		for i := 1; i >= restoreThreads; i++ {
+			wg.Add(1)
+			// Reuse same function, change jobQueue to retryQueue
+			restoreDumpFile(&wg, databaseCredentails, retryQueue, nil, config.Software.DESTINATION_PREFIX, true)
+		}
+		wg.Wait()
+		log.Println("[INFO] Complete repair process.")
 	}
 
 	// Wait for concurrent threads to be complate
-	wg.Wait()
+	
 	programUsageTime := time.Since(programStartTime)
 	log.Println(programUsageTime)
 }
