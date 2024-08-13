@@ -81,8 +81,10 @@ func restoreDumpFile(wg *sync.WaitGroup, databaseCredentails *models.DatabaseCre
 			nok += 1
 			// Enqueue database to reqair queue if is not in repair process.
 			if !isRepair {
-				log.Printf("[INFO] Enqueue %s to repair queue. \n", prefixSchemaName)
+				log.Printf("[INFO] Enqueue %s to repair queue. \n", rawSchemaName)
 				repairQueue.Enqueue(dumpInfo)
+			} else {
+				log.Printf("[ERROR] Repair Service: failed to restore %s to destination MySQL servers: %v", rawSchemaName, err)
 			}
 		} 
 	}
@@ -169,12 +171,11 @@ func main() {
 			// Reuse same function, change jobQueue to retryQueue
 			restoreDumpFile(&wg, databaseCredentails, retryQueue, nil, config.Software.DESTINATION_PREFIX, true)
 		}
+		// Wait for concurrent threads to be complate
 		wg.Wait()
 		log.Println("[INFO] Complete repair process.")
 	}
-
-	// Wait for concurrent threads to be complate
 	
 	programUsageTime := time.Since(programStartTime)
-	log.Println(programUsageTime)
+	log.Println("[INFO] Complete restore the process with time usages:", programUsageTime)
 }
