@@ -80,6 +80,38 @@ func main() {
 	log.SetOutput(mw)
 	log.SetFlags(log.LstdFlags)
 
+	// Create a concurrent queue for filename and retrying file name
+	jobQueue := concurrentqueue.New[models.JobQueue]()
+	retryQueue := concurrentqueue.New[models.JobQueue]()
+
+	listOfDumpDirectory := commaSplit(config.Software.DUMP_FILE_DIRECTORYS)
+	log.Println("Complete reading the dump directory. Total directory: %n", len(listOfDumpDirectory))
+	log.Println("Start enqueue file in directory...")
+	// Loop through provided directory which each directory hold dump directorys
+	for _, rootDir := range listOfDumpDirectory{
+		// Reading all directory in rootDir, if error -> exit with status 1
+		listOfDirInfo, err := os.ReadDir(rootDir)
+		if err != nil {
+			log.Fatalf("Failed to reading directory %s with error: %v", rootDir, err)
+		}
+		// Loop through each directory in rootDir, filter out other file format.
+		for _, dirInfo := range listOfDirInfo {
+			if dirInfo.IsDir() {
+				// create job structure that contains DirName (basedir) and FullPath to that directory
+				job := models.JobQueue{
+					DirName: dirInfo.Name(),
+					FullPath: filepath.Join(rootDir,dirInfo.Name()),
+				}
+				// Enqueue the job structure
+				jobQueue.Enqueue(job)
+			}
+			// If not directory, skip.
+		}
+
+
+
+	}
+
 	programUsageTime := time.Since(programStartTime)
 	log.Println(programUsageTime)
 }
