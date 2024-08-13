@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	_ "os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
