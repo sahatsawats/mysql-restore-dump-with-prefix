@@ -47,7 +47,7 @@ func commaSplit(str string) []string {
 	return strings.Split(str, ",")
 }
 
-func restoreDumpFile(wg *sync.WaitGroup, databaseCredentails *models.DatabaseCrednetials, jobQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], repairQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], prefix string, isRepair bool) {
+func restoreDumpFile(id int, wg *sync.WaitGroup, databaseCredentails *models.DatabaseCrednetials, jobQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], repairQueue *concurrentqueue.ConcurrentQueue[models.JobQueue], prefix string, isRepair bool) {
 	var nok int
 	defer wg.Done()
 	for {
@@ -77,25 +77,26 @@ func restoreDumpFile(wg *sync.WaitGroup, databaseCredentails *models.DatabaseCre
 		// execute the cmd
 		err := cmd.Run()
 		if err != nil {
-			log.Printf("[WARNING] Error from restore database name %s from path %s: %v \n", prefixSchemaName, dumpInfo.FullPath, err)
-			nok += 1
 			// Enqueue database to reqair queue if is not in repair process.
 			if !isRepair {
+				log.Printf("[WARNING] Thread%d: error from restore database name %s from path %s: %v \n", id, prefixSchemaName, dumpInfo.FullPath, err)
+				nok += 1
 				log.Printf("[INFO] Enqueue %s to repair queue. \n", rawSchemaName)
 				repairQueue.Enqueue(dumpInfo)
 			} else {
-				log.Printf("[ERROR] Repair Service: failed to restore %s to destination MySQL servers: %v", rawSchemaName, err)
+				nok += 1
+				log.Printf("[ERROR] Repair Service: Thread%d: failed to restore %s to destination MySQL servers: %v", id, rawSchemaName, err)
 			}
 		} 
 	}
-	log.Printf("[INFO] Complete restore database to MySQL with error report: %d", nok)
+	log.Printf("[INFO] Thread%d: Complete restore database to MySQL with error report: %d", id, nok)
 }
 
 func main() {
 	programStartTime := time.Now()
-	fmt.Println("[INFO] Start reading configuration file...")
+	fmt.Println("Start reading configuration file...")
 	config := readingConfigurationFile()
-	fmt.Println("[INFO] Complete reading configuration file.")
+	fmt.Println("Complete reading configuration file.")
 
 	// Join logging path
 	logFilePath := filepath.Join(config.Logger.LOG_DIRECTORY, config.Logger.LOG_FILENAME)
@@ -154,9 +155,9 @@ func main() {
 	var wg sync.WaitGroup
 	// for loop add concurrent goroutine to wait group.
 	restoreThreads := config.Software.RESTORE_THREADS
-	for i := 1; i >= restoreThreads; i++ {
+	for i := 1; i <= restoreThreads; i++ {
 		wg.Add(1)
-		restoreDumpFile(&wg, databaseCredentails, jobQueue, retryQueue, config.Software.DESTINATION_PREFIX, false)
+		restoreDumpFile(i, &wg, databaseCredentails, jobQueue, retryQueue, config.Software.DESTINATION_PREFIX, false)
 	}
 
 	// Waiting for goroutine process to be complete
@@ -166,10 +167,10 @@ func main() {
 	if !(retryQueue.IsEmpty()) {
 		log.Println("[INFO] Repair Service: Initiated. Number of repair requests found. Starting the repair process.")
 		// Reference same amount of threads
-		for i := 1; i >= restoreThreads; i++ {
+		for i := 1; i <= restoreThreads; i++ {
 			wg.Add(1)
 			// Reuse same function, change jobQueue to retryQueue
-			restoreDumpFile(&wg, databaseCredentails, retryQueue, nil, config.Software.DESTINATION_PREFIX, true)
+			restoreDumpFile(i, &wg, databaseCredentails, retryQueue, nil, config.Software.DESTINATION_PREFIX, true)
 		}
 		// Wait for concurrent threads to be complate
 		wg.Wait()

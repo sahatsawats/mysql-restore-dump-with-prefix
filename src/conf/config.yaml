@@ -13,4 +13,7 @@ logger:
 software:
   destination_prefix: "eff0887_"
   restore_threads: 4
-  dump_file_directory: "/mnt/d/databases/mysql/resources/MySQL-Data-Migration-and-Renaming"
+  ## "<path-to-dump-file1>,<path-to-dump-file2>,.."
+  dump_file_directorys: "/mnt/d/databases/mysql/resources/MySQL-Data-Migration-and-Renaming"
+
+
